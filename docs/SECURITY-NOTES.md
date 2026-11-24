@@ -20,6 +20,11 @@ lives in the engagement:
   no anchor or storyboard rows; they remain **inconclusive**, not negative.
   `SECURITY_MODE=vulnerable` in the replica reproduces the cross-tenant write;
   `SECURITY_MODE=fixed` returns 404 for the outsider and 400 for a wrong flow.
+  Control: the same outsider got 404 from the five project read routes
+  (`getAllAssets`, `getScrptApi`, `getFlowData`, `getSingleProject`,
+  `getStoryboardData`), so read scoping holds and this is specifically a
+  write-side gap. The victim asset was restored and re-read as the original
+  props URL.
 - **F-001 / F-003 (High)** — the credit hold is
   `min(items, concurrentCount ?? 1) × unit`; settlement is `items × unit`.
   `concurrentCount` is client-controlled and defaults to 1. Parallel batches all
