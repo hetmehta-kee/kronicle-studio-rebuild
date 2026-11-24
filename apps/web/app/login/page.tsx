@@ -14,10 +14,15 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [next, setNext] = useState("/home");
+  const [labEmail, setLabEmail] = useState("researcher@kronicle.local");
+  const [labPassword, setLabPassword] = useState("research-3000!");
+  const [labBusy, setLabBusy] = useState(false);
+  const [labError, setLabError] = useState("");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     setNext(params.get("next") || "/home");
+    if (params.get("lab") === "1") return;
     void (async () => {
       try {
         const me = await api<{ onboarded: boolean }>("/api/auth/me");
@@ -55,6 +60,19 @@ export default function LoginPage() {
       setError(err?.message ?? "Invalid code");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function labLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLabBusy(true); setLabError("");
+    try {
+      const res = await api<any>("/api/auth/dev-login", { email: labEmail, password: labPassword });
+      window.localStorage.setItem("agencyId", res.agencyId);
+      window.location.href = "/home";
+    } catch (err: any) {
+      setLabError(err?.message ?? "Lab login failed");
+      setLabBusy(false);
     }
   }
 
@@ -115,6 +133,17 @@ export default function LoginPage() {
               <button onClick={() => setStep("email")} className="mt-4 inline-flex items-center gap-1 text-xs text-muted hover:text-fg"><Mail className="size-3.5" /> Use a different email</button>
             </>
           )}
+
+          <details className="mt-6 rounded-xl border border-line bg-surface p-3">
+            <summary className="cursor-pointer text-xs text-muted">Lab access · local · 3,000 credits</summary>
+            <form onSubmit={labLogin} className="mt-3 space-y-2">
+              <Input value={labEmail} onChange={(e) => setLabEmail(e.target.value)} placeholder="researcher@kronicle.local" />
+              <Input type="password" value={labPassword} onChange={(e) => setLabPassword(e.target.value)} placeholder="Lab password" />
+              <Button type="submit" className="w-full" loading={labBusy}>Open lab account</Button>
+              {labError && <div className="text-xs text-red-300">{labError}</div>}
+            </form>
+            <p className="mt-2 text-[11px] leading-5 text-muted">Loopback-only lab credential; no real Kronicle account. Use <code>/login?lab=1</code> if the demo auto-opens.</p>
+          </details>
 
           <p className="mt-8 text-center text-[11px] leading-5 text-muted">
             By continuing you agree to the terms and privacy policy of this clean-room replica.

@@ -35,8 +35,10 @@ import {
   walletDetail,
 } from "./wallet.js";
 import { exportTimeline, renderClipVideo, svgImage, STORAGE } from "./media.js";
-import { ensureDemo } from "./demo.js";
-import { resolve } from "node:path";
+import { ensureDemo, ensureLabAccount } from "./demo.js";
+import { enqueueJob, recentJobs, registerJob, startJobWorker } from "./jobs.js";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 class BadRequestError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -52,7 +54,7 @@ app.use(cors({ origin: ["http://localhost:3210", "http://127.0.0.1:3000"], crede
 app.use(cookieParser());
 app.use(
   express.json({
-    limit: "8mb",
+    limit: "48mb",
     verify: (req, _res, buf) => {
       (req as any).rawBody = buf;
     },
@@ -820,10 +822,15 @@ app.post("/api/assets/getAssetCounts", authRequired, h(async (req, res) => {
 /* ------------------------------------------------------------ generation */
 
 function scheduleSettle(ledgerId: string, actual: number, delay: number) {
-  setTimeout(() => {
-    try { settleCredits(ledgerId, actual); } catch (e) { console.error("settle failed", e); }
-  }, delay);
+  enqueueJob("settle", { ledgerId, actual }, delay);
 }
+
+// Durable settlement: the worker survives a restart, retries, and never
+// double-charges because settleCredits only acts on a `pending` ledger row.
+registerJob("settle", async (p: { ledgerId: string; actual: number }) => {
+  settleCredits(p.ledgerId, p.actual);
+});
+startJobWorker();
 
 app.post("/api/assetsGenerate/batchPolishAssetsPrompt", authRequired, requirePermission("generate.run"), h(async (req, res) => {
   const agencyId = needAgency(req, res);
@@ -1025,6 +1032,261 @@ app.post("/api/editor/export", authRequired, h(async (req, res) => {
   const clips = Array.isArray(req.body?.clips) ? req.body.clips : [];
   const url = await exportTimeline(clips.map((c: any) => ({ path: String(c.path ?? ""), trimInMs: Number(c.trimInMs ?? 0), trimOutMs: c.trimOutMs ? Number(c.trimOutMs) : undefined, label: c.label })));
   return ok(res, { url });
+}));
+
+/* ------------------------------------------------------------------ chat */
+
+function projectState(projectId: string, agencyId: string) {
+  const project = one<any>("SELECT * FROM projects WHERE id = ? AND agency_id = ?", projectId, agencyId);
+  if (!project) return null;
+  const scripts = all<any>("SELECT id, name, episode_number AS episodeNumber FROM scripts WHERE project_id = ? ORDER BY episode_number ASC", projectId);
+  const assets = all<any>("SELECT id, name, type, state FROM assets WHERE project_id = ?", projectId);
+  const plan = one<any>("SELECT id FROM plans WHERE project_id = ? ORDER BY created_at DESC LIMIT 1", projectId);
+  const shots = one<{ n: number }>("SELECT COUNT(*) AS n FROM storyboards WHERE project_id = ?", projectId)!.n;
+  const clips = one<{ n: number }>("SELECT COUNT(*) AS n FROM clips c JOIN tracks t ON t.id = c.track_id WHERE t.project_id = ?", projectId)!.n;
+  const doneAssets = assets.filter((a) => a.state === "completed").length;
+  return { project, scripts, assets, plan, shots, clips, doneAssets };
+}
+
+function directorReply(projectId: string, agencyId: string, message: string) {
+  const s = projectState(projectId, agencyId);
+  if (!s) return "I can't see that project in this workspace.";
+  const bits: string[] = [];
+  bits.push(
+    `On **${s.project.name}**: ${s.scripts.length} episode${s.scripts.length === 1 ? "" : "s"}, ` +
+    `${s.doneAssets}/${s.assets.length} looks ready, ${s.plan ? "plan built" : "no plan yet"}, ` +
+    `${s.shots} storyboard frame${s.shots === 1 ? "" : "s"}, ${s.clips} clip${s.clips === 1 ? "" : "s"}.`,
+  );
+  if (!s.scripts.length) bits.push("Next: paste the episode script in Script, then Extract assets.");
+  else if (s.doneAssets < s.assets.length) bits.push("Next: Cast & places → generate the missing looks (one image batch).");
+  else if (!s.plan) bits.push("Next: Plan → Generate plan, then check the shot list.");
+  else if (s.shots === 0) bits.push("Next: Storyboard → generate frames for the plan.");
+  else if (s.clips === 0) bits.push("Next: Video → Generate clip from the first frame.");
+  else bits.push("Next: open the editor, trim, and Compile.");
+  bits.push(`You said: “${String(message).slice(0, 160)}”. Tell me the beat you want and I'll point at the exact control.`);
+  return bits.join("\n\n");
+}
+
+function addMessage(agencyId: string, projectId: string, role: "user" | "assistant", content: string, userId?: string | null) {
+  const id = uuid();
+  run(
+    "INSERT INTO agent_messages (id, agency_id, project_id, user_id, role, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    id, agencyId, projectId, userId ?? null, role, content, now(),
+  );
+  return id;
+}
+
+app.post("/api/chat/send", authRequired, h(async (req, res) => {
+  const agencyId = needAgency(req, res); if (!agencyId) return;
+  const projectId = String(req.body?.projectId ?? req.body?.project_id ?? "");
+  const message = String(req.body?.message ?? req.body?.content ?? "").trim();
+  if (!message) return bad(res, "Invalid parameters");
+  const state = projectState(projectId, agencyId);
+  if (!state) return bad(res, "Not found", 404);
+  const userId = addMessage(agencyId, projectId, "user", message, req.user!.id);
+  const reply = directorReply(projectId, agencyId, message);
+  const replyId = addMessage(agencyId, projectId, "assistant", reply);
+  return ok(res, {
+    messages: [
+      { id: userId, role: "user", content: message, createdAt: now() },
+      { id: replyId, role: "assistant", content: reply, createdAt: now() },
+    ],
+    reply,
+  });
+}));
+
+app.post("/api/chat/stream", authRequired, h(async (req, res) => {
+  const agencyId = needAgency(req, res); if (!agencyId) return;
+  const projectId = String(req.body?.projectId ?? req.body?.project_id ?? "");
+  const message = String(req.body?.message ?? req.body?.content ?? "").trim();
+  if (!message) return bad(res, "Invalid parameters");
+  const state = projectState(projectId, agencyId);
+  if (!state) return bad(res, "Not found", 404);
+  const userId = addMessage(agencyId, projectId, "user", message, req.user!.id);
+  const reply = directorReply(projectId, agencyId, message);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+  res.write(`data: ${JSON.stringify({ event: "start", userMessageId: userId })}\n\n`);
+  for (const chunk of reply.match(/[\s\S]{1,24}/g) ?? []) {
+    res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`);
+    await new Promise((r) => setTimeout(r, 8));
+  }
+  const replyId = addMessage(agencyId, projectId, "assistant", reply);
+  res.write(`data: ${JSON.stringify({ event: "done", messageId: replyId })}\n\n`);
+  res.write("data: [DONE]\n\n");
+  res.end();
+}));
+
+app.post("/api/agents/getMemory", authRequired, h(async (req, res) => {
+  const agencyId = needAgency(req, res); if (!agencyId) return;
+  const projectId = String(req.body?.projectId ?? req.body?.project_id ?? "");
+  const state = projectState(projectId, agencyId);
+  if (!state) return bad(res, "Not found", 404);
+  const rows = all<any>(
+    "SELECT id, role, content, created_at AS createdAt FROM agent_messages WHERE project_id = ? AND agency_id = ? ORDER BY created_at DESC LIMIT 40",
+    projectId, agencyId,
+  ).reverse();
+  return ok(res, {
+    projectId,
+    memory: rows,
+    summary: `${state.project.name}: ${state.scripts.length} scripts, ${state.doneAssets}/${state.assets.length} looks, ${state.shots} frames, ${state.clips} clips.`,
+    tokensEstimate: Math.ceil(rows.reduce((n, m) => n + String(m.content).length, 0) / 4),
+  });
+}));
+
+/* --------------------------------------------------------------- uploads */
+
+const UPLOAD_DIR = join(STORAGE, "uploads");
+mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const MIME_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+};
+
+function saveUpload(dataUrl: unknown, allowed: string[]) {
+  const raw = String(dataUrl ?? "");
+  const m = /^data:([a-z0-9.+/-]+);base64,(.+)$/i.exec(raw);
+  if (!m) throw new BadRequestError("Expected a base64 data URL");
+  const mime = m[1].toLowerCase();
+  if (!allowed.includes(mime)) throw new BadRequestError(`Unsupported type ${mime}`);
+  const buf = Buffer.from(m[2], "base64");
+  if (!buf.length) throw new BadRequestError("Empty upload");
+  if (buf.length > 40 * 1024 * 1024) throw new BadRequestError("Upload too large");
+  const ext = MIME_EXT[mime] ?? "bin";
+  const file = `${uuid()}.${ext}`;
+  writeFileSync(join(UPLOAD_DIR, file), buf);
+  return { url: `/media/uploads/${file}`, bytes: buf.length, mime };
+}
+
+app.post("/api/assets/uploadClip", authRequired, requirePermission("project.edit"), h(async (req, res) => {
+  const agencyId = needAgency(req, res); if (!agencyId) return;
+  const projectId = String(req.body?.projectId ?? "");
+  const p = one<any>("SELECT * FROM projects WHERE id = ? AND agency_id = ?", projectId, agencyId);
+  if (!p) return bad(res, "Not found", 404);
+  const saved = saveUpload(req.body?.dataUrl ?? req.body?.file, ["video/mp4", "video/webm", "video/quicktime"]);
+  const id = uuid();
+  run(
+    "INSERT INTO videos (id, project_id, script_id, clip_id, path, status, created_at) VALUES (?, ?, ?, NULL, ?, 'ready', ?)",
+    id, projectId, req.body?.scriptId ?? null, saved.url, now(),
+  );
+  return ok(res, { id, url: saved.url, filePath: saved.url, name: String(req.body?.filename ?? "clip"), bytes: saved.bytes, mime: saved.mime });
+}));
+
+app.post("/api/production/editImage/uploadImage", authRequired, requirePermission("project.edit"), h(async (req, res) => {
+  const agencyId = needAgency(req, res); if (!agencyId) return;
+  const projectId = String(req.body?.projectId ?? "");
+  const p = one<any>("SELECT id FROM projects WHERE id = ? AND agency_id = ?", projectId, agencyId);
+  if (!p) return bad(res, "Not found", 404);
+  const saved = saveUpload(req.body?.dataUrl ?? req.body?.image, ["image/png", "image/jpeg", "image/webp"]);
+  const assetId = String(req.body?.assetId ?? req.body?.id ?? "");
+  if (assetId) {
+    const asset = one<any>("SELECT id FROM assets WHERE id = ? AND project_id = ?", assetId, projectId);
+    if (!asset) return bad(res, "Asset does not exist", 404);
+    run("INSERT INTO asset_images (id, asset_id, path, model, created_at) VALUES (?, ?, ?, 'upload', ?)", uuid(), assetId, saved.url, now());
+    run("UPDATE assets SET image_path = ?, state = 'completed' WHERE id = ?", saved.url, assetId);
+  }
+  return ok(res, { url: saved.url, filePath: saved.url, bytes: saved.bytes, mime: saved.mime });
+}));
+
+/* ------------------------------------------- production asset URL writes */
+
+// Mirrors the reference contract: rewrite an image URL after generation.
+// SECURITY_MODE=vulnerable reproduces F-004 (no object-scope check).
+// SECURITY_MODE=fixed enforces agency ownership, so the lab doubles as the
+// regression test for the finding.
+const securityMode = () => (process.env.SECURITY_MODE === "fixed" ? "fixed" : "vulnerable");
+
+function scopedAsset(assetId: string, agencyId: string) {
+  return one<any>(
+    `SELECT a.* FROM assets a JOIN projects p ON p.id = a.project_id
+      WHERE a.id = ? AND p.agency_id = ?`,
+    assetId, agencyId,
+  );
+}
+
+function updateAssetUrl(kind: "asset" | "anchor") {
+  return h(async (req, res) => {
+    const agencyId = needAgency(req, res); if (!agencyId) return;
+    const id = String(req.body?.id ?? req.body?.assetId ?? "");
+    const url = String(req.body?.url ?? req.body?.imageUrl ?? "");
+    const flowId = String(req.body?.flowId ?? "");
+    if (!id || !url) return bad(res, "Invalid parameters");
+    if (!/^[0-9a-f-]{36}$/i.test(flowId)) return bad(res, "Invalid parameters", 400);
+    const asset = securityMode() === "fixed"
+      ? scopedAsset(id, agencyId)
+      : one<any>("SELECT * FROM assets WHERE id = ?", id);
+    if (!asset) return bad(res, "Asset does not exist", 404);
+    if (securityMode() === "fixed" && req.body?.flowId) {
+      const plan = one<any>("SELECT id FROM plans WHERE project_id = ? ORDER BY created_at DESC LIMIT 1", asset.project_id);
+      if (plan && flowId !== plan.id) return bad(res, "Invalid parameters", 400);
+    }
+    if (!/^https?:\/\//.test(url) && !url.startsWith("/media/")) return bad(res, "Invalid URL");
+    run("UPDATE assets SET image_path = ? WHERE id = ?", url, id);
+    return ok(res, { message: "Prompt updated successfully", id, url, mode: securityMode(), kind });
+  });
+}
+
+app.post("/api/production/assets/updateAssetsUrl", authRequired, requirePermission("project.edit"), updateAssetUrl("asset"));
+app.post("/api/production/anchor/updateAnchorUrl", authRequired, requirePermission("project.edit"), updateAssetUrl("anchor"));
+
+app.post("/api/production/storyboard/updateStoryboardUrl", authRequired, requirePermission("project.edit"), h(async (req, res) => {
+  const agencyId = needAgency(req, res); if (!agencyId) return;
+  const id = String(req.body?.id ?? "");
+  const url = String(req.body?.url ?? "");
+  if (!id || !url) return bad(res, "Invalid parameters");
+  const row = securityMode() === "fixed"
+    ? one<any>("SELECT s.* FROM storyboards s JOIN projects p ON p.id = s.project_id WHERE s.id = ? AND p.agency_id = ?", id, agencyId)
+    : one<any>("SELECT * FROM storyboards WHERE id = ?", id);
+  if (!row) return bad(res, "Not found", 404);
+  if (!/^https?:\/\//.test(url) && !url.startsWith("/media/")) return bad(res, "Invalid URL");
+  run("UPDATE storyboards SET image_path = ? WHERE id = ?", url, id);
+  return ok(res, { message: "Prompt updated successfully", id, url, mode: securityMode() });
+}));
+
+app.post("/api/production/workbench/updateVideoPrompt", authRequired, requirePermission("project.edit"), h(async (req, res) => {
+  const agencyId = needAgency(req, res); if (!agencyId) return;
+  const id = String(req.body?.id ?? "");
+  const prompt = String(req.body?.prompt ?? "");
+  const row = securityMode() === "fixed"
+    ? one<any>(
+        `SELECT c.* FROM clips c JOIN tracks t ON t.id = c.track_id
+           JOIN projects p ON p.id = t.project_id WHERE c.id = ? AND p.agency_id = ?`,
+        id, agencyId,
+      )
+    : one<any>("SELECT * FROM clips WHERE id = ?", id);
+  if (!row) return bad(res, "Not found", 404);
+  run("UPDATE clips SET prompt = ? WHERE id = ?", prompt, id);
+  return ok(res, { message: "Prompt updated successfully", id, mode: securityMode() });
+}));
+
+app.get("/api/system/jobs", authRequired, adminOnly, h(async (_req, res) =>
+  ok(res, { securityMode: securityMode(), jobs: recentJobs(25) }),
+));
+
+app.post("/api/auth/dev-login", h(async (req, res) => {
+  if (process.env.DEMO_MODE === "false") return res.status(404).json({ message: "Not found" });
+  const ip = req.ip ?? "";
+  const local = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ip);
+  if (!local) return res.status(403).json({ message: "Lab login is local only" });
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  const password = String(req.body?.password ?? "");
+  const expected = process.env.LAB_PASSWORD ?? "research-3000!";
+  if (email !== "researcher@kronicle.local" || password !== expected) {
+    return res.status(401).json({ message: "Invalid lab credentials" });
+  }
+  const { user, agencyId } = ensureLabAccount();
+  setSessionCookie(res, signToken(user));
+  return res.json({ lab: true, email: user.email, agencyId, credits: walletDetail(agencyId) });
 }));
 
 app.post("/api/demo/session", h(async (req, res) => {

@@ -106,6 +106,22 @@ async function seedProject(agencyId: string, userId: string) {
   run("INSERT INTO videos (id, project_id, script_id, clip_id, path, status, created_at) VALUES (?, ?, ?, ?, ?, 'ready', ?)", uuid(), projectId, scriptId, clipId, videoUrl, now());
 }
 
+export function ensureLabAccount() {
+  const email = "researcher@kronicle.local";
+  let user = getUserByEmail(email);
+  if (!user) user = createUser(email, "Researcher");
+  let agency = listAgencies(user.id).find((a) => a.name === "Research Lab");
+  let agencyId = agency?.id;
+  if (!agencyId) {
+    agencyId = createAgency(user.id, "Research Lab", "org");
+    creditWallet(agencyId, 3000, { reason: "lab_seed", actorUserId: user.user_id });
+  } else {
+    const w = getWallet(agencyId)!;
+    if (w.balance < 3000) creditWallet(agencyId, 3000 - w.balance, { reason: "lab_seed", actorUserId: user.user_id });
+  }
+  return { user, agencyId };
+}
+
 export function attachDemoAgency(userId: string) {
   const a = listAgencies(userId).find((x) => x.name === DEMO_AGENCY);
   return a?.id;

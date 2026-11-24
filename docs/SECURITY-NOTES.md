@@ -11,6 +11,15 @@ lives in the engagement:
 - `evidence/raw/{concurrent-count,independent-verify-cc,credit-bypass,chain,signup-bonus}/`
 
 ## Findings
+- **F-004 (High)** — cross-tenant asset URL overwrite (IDOR write). An account
+  that is not a member of the victim workspace changed the victim's asset image
+  URL via `POST /api/production/assets/updateAssetsUrl` using a random `flowId`.
+  Reproduced and reverted; evidence `evidence/raw/asset-idor/`. The endpoint
+  requires authentication (401 without a token). Sibling checks: the anchor and
+  storyboard writers could not be exercised on the live project because it had
+  no anchor or storyboard rows; they remain **inconclusive**, not negative.
+  `SECURITY_MODE=vulnerable` in the replica reproduces the cross-tenant write;
+  `SECURITY_MODE=fixed` returns 404 for the outsider and 400 for a wrong flow.
 - **F-001 / F-003 (High)** — the credit hold is
   `min(items, concurrentCount ?? 1) × unit`; settlement is `items × unit`.
   `concurrentCount` is client-controlled and defaults to 1. Parallel batches all

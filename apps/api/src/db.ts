@@ -209,6 +209,31 @@ CREATE TABLE IF NOT EXISTS orders (
   payment_id TEXT,
   created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  run_at INTEGER NOT NULL,
+  locked_at INTEGER,
+  result TEXT,
+  error TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_queue ON jobs(status, run_at);
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id TEXT PRIMARY KEY,
+  agency_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  user_id TEXT,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_project ON agent_messages(project_id, created_at);
 `);
 
 // Lightweight migrations for the dev database.
