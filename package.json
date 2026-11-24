@@ -1,0 +1,15 @@
+{
+  "name": "kronicle.kee",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @kronicle/web --filter @kronicle/api dev",
+    "dev:web": "pnpm --filter @kronicle/web dev",
+    "dev:api": "pnpm --filter @kronicle/api dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lab": "pnpm --filter @kronicle/lab start",
+    "seed": "pnpm --filter @kronicle/api seed"
+  }
+}

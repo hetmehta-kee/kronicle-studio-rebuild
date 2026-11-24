@@ -1,0 +1,13 @@
+/
+/home
+/home/pick-director
+/home/pick-look
+/home/pick-models
+/home/script-split
+/home/settings/billing
+/home/settings/general
+/home/settings/team
+/home/settings/usage
+/home/shows
+/platform
+/platform/workspaces/:id
