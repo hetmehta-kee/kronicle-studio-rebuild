@@ -9,7 +9,7 @@ cd /Users/het/kronicle.kee
 pnpm install
 pnpm dev          # api :4000 + web :3210
 ```
-Open **http://localhost:3210**.
+Open **http://localhost:3210**. It opens the studio directly — no login — with **10,000 demo credits** and a seeded project. (Marketing copy lives at `/welcome`.) Use `/login` if you want the real OTP flow.
 
 ## Walkthrough (about five minutes)
 1. **Sign in** with any email (e.g. `demo@kronicle.local`). The four-digit code is

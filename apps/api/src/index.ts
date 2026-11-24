@@ -35,6 +35,7 @@ import {
   walletDetail,
 } from "./wallet.js";
 import { exportTimeline, renderClipVideo, svgImage, STORAGE } from "./media.js";
+import { ensureDemo } from "./demo.js";
 import { resolve } from "node:path";
 
 class BadRequestError extends Error {
@@ -1024,6 +1025,16 @@ app.post("/api/editor/export", authRequired, h(async (req, res) => {
   const clips = Array.isArray(req.body?.clips) ? req.body.clips : [];
   const url = await exportTimeline(clips.map((c: any) => ({ path: String(c.path ?? ""), trimInMs: Number(c.trimInMs ?? 0), trimOutMs: c.trimOutMs ? Number(c.trimOutMs) : undefined, label: c.label })));
   return ok(res, { url });
+}));
+
+app.post("/api/demo/session", h(async (req, res) => {
+  if (process.env.DEMO_MODE === "false") return res.status(404).json({ message: "Not found" });
+  const ip = req.ip ?? "";
+  const local = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(ip);
+  if (!local) return res.status(403).json({ message: "Demo mode is local only" });
+  const { user, agencyId } = await ensureDemo();
+  setSessionCookie(res, signToken(user));
+  return res.json({ demo: true, agencyId, email: user.email, credits: walletDetail(agencyId) });
 }));
 
 app.get("/api/version", h(async (_req, res) => res.json({ release: "kronicle.kee-dev" })));

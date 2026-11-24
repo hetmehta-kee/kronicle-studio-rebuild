@@ -45,7 +45,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       // id must not turn a valid login into a 403.
       const stored = typeof window !== "undefined" ? window.localStorage.getItem("agencyId") : "";
       if (typeof window !== "undefined") window.localStorage.removeItem("agencyId");
-      const meRes = await api<Me>("/api/auth/me");
+      let meRes: Me;
+      try {
+        meRes = await api<Me>("/api/auth/me");
+      } catch (err: any) {
+        if (err?.status !== 401) throw err;
+        // Local demo: open the studio directly, no login.
+        await api("/api/demo/session", {});
+        meRes = await api<Me>("/api/auth/me");
+      }
       const ag = await api<{ data: { agencies: Agency[] } }>("/api/agency/getMyAgency", {});
       const list = ag.data.agencies ?? [];
       setAgencies(list);

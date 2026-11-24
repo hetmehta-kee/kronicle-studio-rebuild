@@ -14,6 +14,9 @@
 - Billing/team/usage/general screens, marketing/pricing, invite page.
 - Billing lab: vulnerable vs fixed engine, ₹ target, $ provider target,
   detector, JSON/CLI.
+- **No-login demo mode**: root opens `/home` with a local demo session, 10,000
+  credits, a fully seeded project and a pre-seeded editor clip. `DEMO_MODE=false`
+  disables it; the endpoint is loopback-only.
 
 ## Mocked
 - AI providers (text/image/video) are deterministic local mocks; images are SVG,

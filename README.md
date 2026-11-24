@@ -22,6 +22,17 @@ copy are copied.
   concurrency, identity-bound bonus, caps). Includes a $10k impact model,
   an attack simulator and an abuse-detection dashboard.
 
+## Demo mode (no login)
+Opening the app lands directly in the studio: the first request creates a local
+demo session (`demo@kronicle.studio`) with **10,000 credits**, a seeded
+"The Lighthouse Keeper" project (script, assets, looks, plan, storyboard and a
+2 s clip) and the editor ready to compile. No login, no onboarding.
+
+- `http://localhost:3210/` → `/home`
+- Marketing page: `http://localhost:3210/welcome`
+- Disable demo sessions: `DEMO_MODE=false` in `apps/api/.env`
+- The demo endpoint is loopback-only and never touches a live service.
+
 ## Why clean-room
 
 The live application's code and assets are proprietary. This repo reproduces the
