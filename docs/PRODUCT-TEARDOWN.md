@@ -692,7 +692,7 @@ Row shapes:
 // generation
 {"id":"01a20c9d-…","type":"generation","creditsHeld":7.0224,
  "genType":"asset_prompt","outputType":"image",
- "actorUserId":415571210,"actorName":"…","actorEmail":"…",
+ "actorUserId":"…","actorName":"…","actorEmail":"…",
  "createdAt":1795507985,"status":"completed","creditsDelta":-7.026371}
 
 // topup
